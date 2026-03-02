@@ -89,24 +89,25 @@
         import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // --- CONFIGURACIÓN DE FIREBASE ---
-        // Si vas a usar esto en GitHub, rellena tus datos aquí o usa la inyección automática
+        /* INSTRUCCIONES PARA GITHUB:
+           1. Ve a console.firebase.google.com y crea un proyecto.
+           2. Crea una "Web App" y copia el objeto 'firebaseConfig'.
+           3. Pégalo aquí abajo sustituyendo las llaves vacías {}.
+        */
         let firebaseConfig = {};
+        
+        // Intento de obtener config automática del entorno
         try {
-            firebaseConfig = JSON.parse(window.__firebase_config || '{}');
+            const envConfig = JSON.parse(window.__firebase_config || '{}');
+            if (envConfig.apiKey) firebaseConfig = envConfig;
         } catch (e) {}
 
-        // Verificación de seguridad para evitar pantalla en blanco si no hay config
-        const hasConfig = firebaseConfig && firebaseConfig.apiKey;
-
-        let app, auth, db;
-        if (hasConfig) {
-            app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
-        }
-
+        const hasConfig = !!firebaseConfig.apiKey;
+        const app = hasConfig ? initializeApp(firebaseConfig) : null;
+        const auth = hasConfig ? getAuth(app) : null;
+        const db = hasConfig ? getFirestore(app) : null;
         const appId = window.__app_id || 'refugio-jaime-isabel-prod';
+
         let currentUser = localStorage.getItem('refugio_user');
         let reunionDate = null;
         let authReady = false;
@@ -167,8 +168,7 @@
                     else await signInAnonymously(auth);
                 } catch (err) { console.error("Firebase Auth Error:", err); }
             } else {
-                console.warn("Iniciado en modo demostración (Sin Firebase Config)");
-                // Cargar datos locales de prueba si fuera necesario
+                console.warn("Iniciado en modo demostración. Configure Firebase para guardar datos.");
             }
 
             window.switchView('refugio');
@@ -178,27 +178,29 @@
 
         function startDataListeners() {
             if (!db) return;
+            
+            // Regla 1: Usar rutas estrictas /artifacts/{appId}/public/data/{collection}
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'memories'), (snap) => {
                 const memories = snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
                 renderMemories(memories);
-            });
+            }, (err) => console.error("Error en recuerdos:", err));
 
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'photos'), (snap) => {
                 const photos = snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
                 renderPhotos(photos);
-            });
+            }, (err) => console.error("Error en fotos:", err));
 
             onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'capsules'), (snap) => {
                 const capsules = snap.docs.map(d => ({id: d.id, ...d.data()}));
                 renderCapsules(capsules);
-            });
+            }, (err) => console.error("Error en cápsulas:", err));
 
             onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'reunion', 'target'), (snap) => {
                 if(snap.exists()) {
                     reunionDate = snap.data().date;
                     startCountdown();
                 }
-            });
+            }, (err) => console.error("Error en reencuentro:", err));
         }
 
         function renderMemories(data) {
@@ -248,7 +250,7 @@
                         <div class="capsule-locked relative h-80 rounded-[4rem] text-white flex flex-col items-center justify-center p-10 text-center space-y-6 shadow-2xl transition-transform hover:scale-[1.02]">
                             <div class="absolute top-8 right-10 opacity-20"><i data-lucide="lock"></i></div>
                             <div class="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center animate-pulse border border-white/10"><i data-lucide="hourglass" class="text-[#E8D5C4]"></i></div>
-                            <h4 class="font-serif italic text-2xl tracking-wide">${String(c.title)}</h4>
+                            <h4 class="font-serif italic text-2xl tracking-wide">${String(c.title || 'Tesoro oculto')}</h4>
                             <div class="space-y-1">
                                 <p class="text-[9px] font-bold uppercase tracking-[0.3em] opacity-40">Desbloqueo programado</p>
                                 <p class="font-serif italic text-[#E8D5C4]">${dateObj.toLocaleDateString()} • ${dateObj.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
@@ -275,22 +277,25 @@
 
         // --- HANDLERS ---
         window.saveMemory = async () => {
-            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            if (!hasConfig) { alert("¡Hola! Para guardar mensajes en GitHub, necesitas conectar tu Firebase. Mira las instrucciones en el código."); return; }
             const content = $('memory-input').value;
             if(!content) return;
-            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'memories'), {
-                content: String(content), sender: String(currentUser), createdAt: serverTimestamp()
-            });
-            $('memory-input').value = '';
-            window.hideModal('modal-memory');
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'memories'), {
+                    content: String(content), sender: String(currentUser), createdAt: serverTimestamp()
+                });
+                $('memory-input').value = '';
+                window.hideModal('modal-memory');
+            } catch(e) { alert("Error de permisos en Firebase. Asegúrate de poner las reglas en modo público."); }
         };
 
         window.saveCapsule = async () => {
-            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            if (!hasConfig) { alert("Configuración de Firebase necesaria."); return; }
             const title = $('capsule-title').value;
             const content = $('capsule-content').value;
             const unlockDate = $('capsule-date').value;
             if(!title || !content || !unlockDate) return;
+            
             const capsuleData = { 
                 title: String(title), 
                 content: String(content), 
@@ -298,22 +303,24 @@
                 sender: String(currentUser), 
                 createdAt: serverTimestamp() 
             };
+            
             const fileInput = $('capsule-file');
             if(fileInput.files[0]) {
                 const reader = new FileReader();
                 reader.onloadend = async () => {
                     capsuleData.file = String(reader.result);
                     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'capsules'), capsuleData);
+                    window.hideModal('modal-capsule');
                 };
                 reader.readAsDataURL(fileInput.files[0]);
             } else { 
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'capsules'), capsuleData); 
+                window.hideModal('modal-capsule');
             }
-            window.hideModal('modal-capsule');
         };
 
         window.uploadPhoto = (e) => {
-            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            if (!hasConfig) { alert("Configuración de Firebase necesaria."); return; }
             const file = e.target.files[0];
             if(!file) return;
             const reader = new FileReader();
@@ -326,7 +333,7 @@
         };
 
         window.updateReunionDate = async () => {
-            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            if (!hasConfig) { alert("Configuración de Firebase necesaria."); return; }
             const date = $('reunion-input').value;
             if(!date) return;
             await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'reunion', 'target'), {
@@ -349,10 +356,15 @@
                 if(!reunionDate) return;
                 const diff = new Date(reunionDate) - new Date();
                 if(diff > 0) {
-                    $('cd-d').textContent = String(Math.floor(diff / (1000*60*60*24))).padStart(2,'0');
-                    $('cd-h').textContent = String(Math.floor((diff % (1000*60*60*24)) / (1000*60*60))).padStart(2,'0');
-                    $('cd-m').textContent = String(Math.floor((diff % (1000*60*60)) / (1000*60))).padStart(2,'0');
-                    $('cd-s').textContent = String(Math.floor((diff % (1000*60)) / 1000)).padStart(2,'0');
+                    const d = Math.floor(diff / (1000*60*60*24));
+                    const h = Math.floor((diff % (1000*60*60*24)) / (1000*60*60));
+                    const m = Math.floor((diff % (1000*60*60)) / (1000*60));
+                    const s = Math.floor((diff % (1000*60)) / 1000);
+                    
+                    $('cd-d').textContent = String(d).padStart(2,'0');
+                    $('cd-h').textContent = String(h).padStart(2,'0');
+                    $('cd-m').textContent = String(m).padStart(2,'0');
+                    $('cd-s').textContent = String(s).padStart(2,'0');
                 } else {
                     $('cd-d').textContent = '00'; $('cd-h').textContent = '00'; $('cd-m').textContent = '00'; $('cd-s').textContent = '00';
                 }
@@ -371,9 +383,9 @@
             ctx.strokeStyle = currentUser === 'Jaime' ? '#6B5E54' : '#C29178';
             const getXY = (e) => {
                 const b = canvas.getBoundingClientRect();
-                const x = (e.clientX || (e.touches && e.touches[0].clientX)) - b.left;
-                const y = (e.clientY || (e.touches && e.touches[0].clientY)) - b.top;
-                return [x, y];
+                const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+                const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+                return [clientX - b.left, clientY - b.top];
             };
             const start = (e) => { drawing = true; ctx.beginPath(); ctx.moveTo(...getXY(e)); };
             const draw = (e) => { if(!drawing) return; ctx.lineTo(...getXY(e)); ctx.stroke(); };
@@ -515,7 +527,7 @@
         <nav class="fixed bottom-10 left-1/2 -translate-x-1/2 glass px-10 py-6 rounded-full shadow-2xl flex items-center gap-10 z-50 border border-white/40 ring-8 ring-[#FDFBF7]/80">
             <button id="nav-refugio" onclick="switchView('refugio')" class="opacity-40 transition-all"><i data-lucide="book-heart"></i></button>
             <button id="nav-fotos" onclick="switchView('fotos')" class="opacity-40 transition-all"><i data-lucide="camera"></i></button>
-            <button onclick="showModal('modal-memory')" class="bg-[#6B5E54] text-white p-5 rounded-full -mt-20 shadow-2xl border-4 border-[#FDFBF7] hover:scale-110 transition-all"><i data-lucide="plus"></i></button>
+            <button onclick="showModal('modal-memory')" class="bg-[#6B5E54] text-white p-5 rounded-full -mt-20 shadow-2xl border-4 border-[#FDFBF7] hover:scale-110 active:scale-95 transition-all"><i data-lucide="plus"></i></button>
             <button id="nav-capsulas" onclick="switchView('capsulas')" class="opacity-40 transition-all"><i data-lucide="hourglass"></i></button>
             <button id="nav-juegos" onclick="switchView('juegos')" class="opacity-40 transition-all"><i data-lucide="palette"></i></button>
         </nav>
@@ -560,7 +572,7 @@
             <h2 class="text-4xl font-serif italic mb-10 text-[#6B5E54]">Próxima Cita</h2>
             <input id="reunion-input" type="datetime-local" class="w-full p-6 rounded-full font-serif italic text-2xl text-[#6B5E54] text-center mb-10">
             <div class="flex gap-6">
-                <button onclick="hideModal('modal-reunion')" class="flex-1 text-[11px] font-bold uppercase text-[#A69384]">Cerrar</button>
+                <button onclick="hideModal('modal-reunion')" class="flex-1 text-[11px] font-bold uppercase tracking-widest text-[#A69384]">Cerrar</button>
                 <button onclick="updateReunionDate()" class="flex-1 bg-[#6B5E54] text-white py-6 rounded-full text-[11px] font-bold uppercase shadow-xl">Fijar Fecha</button>
             </div>
         </div>
