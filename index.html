@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>El Refugio • Jaime & Isabel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:italic,wght@300;400;500;600&family=Inter:wght@200;300;400;500;600&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --color-bg: #FDFBF7;
+            --color-text: #3D3834;
+            --color-accent: #C29178;
+            --color-secondary: #8C7A6B;
+            --color-glass: rgba(255, 255, 255, 0.7);
+        }
+
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: var(--color-bg); 
+            color: var(--color-text);
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+        }
+
+        .font-serif { font-family: 'Cormorant Garamond', serif; }
+        
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .animate-fade-up { animation: fadeUp 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        
+        .glass {
+            background: var(--color-glass);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(232, 213, 196, 0.3);
+        }
+
+        .shadow-premium {
+            box-shadow: 0 20px 50px rgba(107, 94, 84, 0.05);
+        }
+
+        ::-webkit-scrollbar { width: 0px; }
+        
+        canvas {
+            touch-action: none;
+            cursor: crosshair;
+        }
+
+        button { transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        button:active { transform: scale(0.95); }
+
+        .nav-active { opacity: 1 !important; transform: translateY(-4px); color: var(--color-accent); }
+        
+        .capsule-locked {
+            background: linear-gradient(135deg, #4A443F 0%, #2D2926 100%);
+        }
+
+        input, textarea {
+            background: white !important;
+            border: 1px solid rgba(232, 213, 196, 0.5) !important;
+            transition: border-color 0.3s ease;
+        }
+        input:focus, textarea:focus {
+            border-color: var(--color-accent) !important;
+            outline: none;
+        }
+
+        .modal-overlay {
+            background: rgba(61, 56, 52, 0.2);
+            backdrop-filter: blur(8px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+        }
+        .modal-overlay.active { display: flex; }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // --- CONFIGURACIÓN DE FIREBASE ---
+        // Si vas a usar esto en GitHub, rellena tus datos aquí o usa la inyección automática
+        let firebaseConfig = {};
+        try {
+            firebaseConfig = JSON.parse(window.__firebase_config || '{}');
+        } catch (e) {}
+
+        // Verificación de seguridad para evitar pantalla en blanco si no hay config
+        const hasConfig = firebaseConfig && firebaseConfig.apiKey;
+
+        let app, auth, db;
+        if (hasConfig) {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        }
+
+        const appId = window.__app_id || 'refugio-jaime-isabel-prod';
+        let currentUser = localStorage.getItem('refugio_user');
+        let reunionDate = null;
+        let authReady = false;
+
+        const $ = (id) => document.getElementById(id);
+
+        // --- FUNCIONES GLOBALES ---
+        window.switchView = (viewName) => {
+            document.querySelectorAll('[id^="view-"]').forEach(v => v.classList.add('hidden'));
+            const targetView = $(`view-${viewName}`);
+            if (targetView) targetView.classList.remove('hidden');
+            
+            document.querySelectorAll('nav button').forEach(btn => btn.classList.remove('nav-active'));
+            const activeBtn = $(`nav-${viewName}`);
+            if(activeBtn) activeBtn.classList.add('nav-active');
+
+            if (viewName === 'juegos') window.initCanvas();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        window.selectUser = (name) => {
+            currentUser = name;
+            localStorage.setItem('refugio_user', name);
+            window.initApp();
+        };
+
+        window.logout = () => {
+            localStorage.removeItem('refugio_user');
+            location.reload();
+        };
+
+        window.showModal = (id) => $(id).classList.add('active');
+        window.hideModal = (id) => $(id).classList.remove('active');
+
+        // --- INICIALIZACIÓN ---
+        window.initApp = async () => {
+            if (!currentUser) {
+                $('auth-screen').classList.remove('hidden');
+                $('main-app').classList.add('hidden');
+                lucide.createIcons();
+                return;
+            }
+            
+            $('auth-screen').classList.add('hidden');
+            $('main-app').classList.remove('hidden');
+            $('display-user').textContent = String(currentUser);
+
+            if (hasConfig) {
+                onAuthStateChanged(auth, (user) => {
+                    if (user && !authReady) {
+                        authReady = true;
+                        startDataListeners();
+                    }
+                });
+
+                try {
+                    if (window.__initial_auth_token) await signInWithCustomToken(auth, window.__initial_auth_token);
+                    else await signInAnonymously(auth);
+                } catch (err) { console.error("Firebase Auth Error:", err); }
+            } else {
+                console.warn("Iniciado en modo demostración (Sin Firebase Config)");
+                // Cargar datos locales de prueba si fuera necesario
+            }
+
+            window.switchView('refugio');
+            updateClocks();
+            lucide.createIcons();
+        };
+
+        function startDataListeners() {
+            if (!db) return;
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'memories'), (snap) => {
+                const memories = snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                renderMemories(memories);
+            });
+
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'photos'), (snap) => {
+                const photos = snap.docs.map(d => d.data()).sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                renderPhotos(photos);
+            });
+
+            onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'capsules'), (snap) => {
+                const capsules = snap.docs.map(d => ({id: d.id, ...d.data()}));
+                renderCapsules(capsules);
+            });
+
+            onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'reunion', 'target'), (snap) => {
+                if(snap.exists()) {
+                    reunionDate = snap.data().date;
+                    startCountdown();
+                }
+            });
+        }
+
+        function renderMemories(data) {
+            const container = $('memories-list');
+            if (!container) return;
+            container.innerHTML = data.map(m => `
+                <div class="animate-fade-up">
+                    <div class="p-8 rounded-[2.5rem] ${m.sender === 'Jaime' ? 'bg-white shadow-premium' : 'bg-[#F3E9E0]/50'} border border-white/50">
+                        <div class="flex justify-between items-center mb-6">
+                            <div class="flex items-center gap-2">
+                                <span class="w-1.5 h-1.5 rounded-full ${m.sender === 'Jaime' ? 'bg-[#6B5E54]' : 'bg-[#C29178]'}"></span>
+                                <span class="text-[10px] font-bold tracking-[0.2em] uppercase opacity-40">${String(m.sender)}</span>
+                            </div>
+                            <span class="text-[9px] font-medium opacity-30">${m.createdAt ? new Date(m.createdAt.seconds * 1000).toLocaleDateString() : 'Atesorando...'}</span>
+                        </div>
+                        <p class="text-xl font-serif leading-relaxed text-[#4A443F]">${String(m.content)}</p>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderPhotos(data) {
+            const container = $('photos-list');
+            if (!container) return;
+            container.innerHTML = data.map(p => `
+                <div class="animate-fade-up max-w-[92%] ${p.sender === currentUser ? 'ml-auto' : ''}">
+                    <div class="bg-white p-3 rounded-[3rem] shadow-premium border border-white/40">
+                        <img src="${p.url}" class="rounded-[2.5rem] w-full h-auto object-cover" />
+                        <div class="p-4 flex justify-between items-center text-[10px] font-bold uppercase tracking-tighter opacity-40">
+                            <span>${String(p.sender)}</span>
+                            <span>${p.createdAt ? new Date(p.createdAt.seconds * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : ''}</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderCapsules(data) {
+            const container = $('capsules-grid');
+            if (!container) return;
+            const now = new Date();
+            container.innerHTML = data.map(c => {
+                const unlocked = now >= new Date(c.unlockDate);
+                const dateObj = new Date(c.unlockDate);
+                if (!unlocked) {
+                    return `
+                        <div class="capsule-locked relative h-80 rounded-[4rem] text-white flex flex-col items-center justify-center p-10 text-center space-y-6 shadow-2xl transition-transform hover:scale-[1.02]">
+                            <div class="absolute top-8 right-10 opacity-20"><i data-lucide="lock"></i></div>
+                            <div class="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center animate-pulse border border-white/10"><i data-lucide="hourglass" class="text-[#E8D5C4]"></i></div>
+                            <h4 class="font-serif italic text-2xl tracking-wide">${String(c.title)}</h4>
+                            <div class="space-y-1">
+                                <p class="text-[9px] font-bold uppercase tracking-[0.3em] opacity-40">Desbloqueo programado</p>
+                                <p class="font-serif italic text-[#E8D5C4]">${dateObj.toLocaleDateString()} • ${dateObj.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    return `
+                        <div class="h-auto rounded-[4rem] bg-white border border-[#E8D5C4]/20 shadow-premium overflow-hidden p-10 space-y-6 animate-fade-up">
+                            <div class="flex justify-between items-center opacity-30"><i data-lucide="sparkles" class="text-[#C29178]"></i><span class="text-[9px] font-bold uppercase tracking-widest">Tesoro Abierto</span></div>
+                            ${c.file ? `<img src="${c.file}" class="rounded-[2.5rem] w-full h-56 object-cover shadow-inner border border-[#FDFBF7]"/>` : ''}
+                            <h4 class="font-serif italic text-3xl text-[#6B5E54]">${String(c.title)}</h4>
+                            <p class="font-serif text-xl italic text-[#8C7A6B] leading-relaxed">"${String(c.content)}"</p>
+                            <div class="pt-6 border-t border-[#E8D5C4]/20 flex items-center gap-2">
+                                <span class="w-2 h-2 rounded-full bg-[#C29178]"></span>
+                                <span class="text-[10px] font-bold uppercase tracking-widest opacity-40">De: ${String(c.sender)}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+            }).join('');
+            lucide.createIcons();
+        }
+
+        // --- HANDLERS ---
+        window.saveMemory = async () => {
+            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            const content = $('memory-input').value;
+            if(!content) return;
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'memories'), {
+                content: String(content), sender: String(currentUser), createdAt: serverTimestamp()
+            });
+            $('memory-input').value = '';
+            window.hideModal('modal-memory');
+        };
+
+        window.saveCapsule = async () => {
+            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            const title = $('capsule-title').value;
+            const content = $('capsule-content').value;
+            const unlockDate = $('capsule-date').value;
+            if(!title || !content || !unlockDate) return;
+            const capsuleData = { 
+                title: String(title), 
+                content: String(content), 
+                unlockDate: new Date(unlockDate).toISOString(), 
+                sender: String(currentUser), 
+                createdAt: serverTimestamp() 
+            };
+            const fileInput = $('capsule-file');
+            if(fileInput.files[0]) {
+                const reader = new FileReader();
+                reader.onloadend = async () => {
+                    capsuleData.file = String(reader.result);
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'capsules'), capsuleData);
+                };
+                reader.readAsDataURL(fileInput.files[0]);
+            } else { 
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'capsules'), capsuleData); 
+            }
+            window.hideModal('modal-capsule');
+        };
+
+        window.uploadPhoto = (e) => {
+            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            const file = e.target.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'photos'), {
+                    url: String(reader.result), sender: String(currentUser), createdAt: serverTimestamp()
+                });
+            };
+            reader.readAsDataURL(file);
+        };
+
+        window.updateReunionDate = async () => {
+            if (!hasConfig) { alert("Configuración de Firebase no detectada"); return; }
+            const date = $('reunion-input').value;
+            if(!date) return;
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'reunion', 'target'), {
+                date: String(date), updatedAt: serverTimestamp()
+            });
+            window.hideModal('modal-reunion');
+        };
+
+        function updateClocks() {
+            const now = new Date();
+            const fmt = (tz) => new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: tz }).format(now);
+            $('time-puerto').textContent = fmt('Europe/Madrid');
+            $('time-boston').textContent = fmt('America/New_York');
+            setTimeout(updateClocks, 10000);
+        }
+
+        function startCountdown() {
+            if (window.countdownInterval) clearInterval(window.countdownInterval);
+            window.countdownInterval = setInterval(() => {
+                if(!reunionDate) return;
+                const diff = new Date(reunionDate) - new Date();
+                if(diff > 0) {
+                    $('cd-d').textContent = String(Math.floor(diff / (1000*60*60*24))).padStart(2,'0');
+                    $('cd-h').textContent = String(Math.floor((diff % (1000*60*60*24)) / (1000*60*60))).padStart(2,'0');
+                    $('cd-m').textContent = String(Math.floor((diff % (1000*60*60)) / (1000*60))).padStart(2,'0');
+                    $('cd-s').textContent = String(Math.floor((diff % (1000*60)) / 1000)).padStart(2,'0');
+                } else {
+                    $('cd-d').textContent = '00'; $('cd-h').textContent = '00'; $('cd-m').textContent = '00'; $('cd-s').textContent = '00';
+                }
+            }, 1000);
+        }
+
+        // --- LIENZO ---
+        let canvas, ctx, drawing = false;
+        window.initCanvas = () => {
+            canvas = $('canvas-board');
+            if (!canvas) return;
+            ctx = canvas.getContext('2d');
+            canvas.width = canvas.parentNode.offsetWidth;
+            canvas.height = 500;
+            ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.lineWidth = 3;
+            ctx.strokeStyle = currentUser === 'Jaime' ? '#6B5E54' : '#C29178';
+            const getXY = (e) => {
+                const b = canvas.getBoundingClientRect();
+                const x = (e.clientX || (e.touches && e.touches[0].clientX)) - b.left;
+                const y = (e.clientY || (e.touches && e.touches[0].clientY)) - b.top;
+                return [x, y];
+            };
+            const start = (e) => { drawing = true; ctx.beginPath(); ctx.moveTo(...getXY(e)); };
+            const draw = (e) => { if(!drawing) return; ctx.lineTo(...getXY(e)); ctx.stroke(); };
+            const stop = () => { drawing = false; };
+            canvas.onmousedown = start; canvas.onmousemove = draw; canvas.onmouseup = stop;
+            canvas.ontouchstart = (e) => { e.preventDefault(); start(e); }; 
+            canvas.ontouchmove = (e) => { e.preventDefault(); draw(e); }; 
+            canvas.ontouchend = stop;
+        };
+
+        window.clearCanvasBoard = () => { if(ctx) ctx.clearRect(0, 0, canvas.width, canvas.height); };
+
+        window.onload = () => {
+            window.initApp();
+        };
+
+    </script>
+</head>
+
+<body class="bg-organic selection:bg-[#E8D5C4]">
+
+    <!-- PANTALLA BIENVENIDA -->
+    <div id="auth-screen" class="min-h-screen flex items-center justify-center p-6 hidden">
+        <div class="max-w-xl w-full text-center space-y-20 animate-fade-up">
+            <div class="space-y-6">
+                <h1 class="text-7xl font-serif italic text-[#6B5E54] tracking-tight">Bienvenidos</h1>
+                <p class="text-[11px] uppercase tracking-[0.6em] text-[#A69384] font-medium">El espacio privado de Jaime e Isabel</p>
+            </div>
+            <div class="grid grid-cols-2 gap-10">
+                <button onclick="selectUser('Jaime')" class="group p-12 rounded-[4rem] bg-white shadow-premium hover:shadow-2xl transition-all hover:-translate-y-2 border border-[#E8D5C4]/20">
+                    <div class="w-20 h-20 rounded-full bg-[#F3E9E0] flex items-center justify-center mx-auto text-[#6B5E54] group-hover:bg-[#6B5E54] group-hover:text-white transition-all"><i data-lucide="user"></i></div>
+                    <span class="font-serif italic text-3xl mt-6 block">Jaime</span>
+                </button>
+                <button onclick="selectUser('Isabel')" class="group p-12 rounded-[4rem] bg-white shadow-premium hover:shadow-2xl transition-all hover:-translate-y-2 border border-[#E8D5C4]/20">
+                    <div class="w-20 h-20 rounded-full bg-[#FDFBF7] border border-[#E8D5C4] flex items-center justify-center mx-auto text-[#6B5E54] group-hover:bg-[#C29178] group-hover:text-white transition-all"><i data-lucide="user"></i></div>
+                    <span class="font-serif italic text-3xl mt-6 block">Isabel</span>
+                </button>
+            </div>
+            <div class="pt-10 opacity-20 animate-pulse"><i data-lucide="heart" class="mx-auto"></i></div>
+        </div>
+    </div>
+
+    <!-- MAIN APP -->
+    <div id="main-app" class="hidden min-h-screen pb-40">
+        <header class="sticky top-0 z-50 glass px-6 py-6">
+            <div class="max-w-2xl mx-auto flex justify-between items-center">
+                <div class="flex items-center gap-6">
+                    <button onclick="logout()" class="p-2 text-[#A69384] hover:text-[#6B5E54] transition-colors"><i data-lucide="log-out"></i></button>
+                    <div>
+                        <h1 class="text-3xl font-serif italic text-[#6B5E54] leading-none">Refugio</h1>
+                        <p class="text-[9px] font-bold text-[#A69384] uppercase tracking-[0.3em] mt-1">Hola, <span id="display-user"></span></p>
+                    </div>
+                </div>
+                <div class="flex gap-8 text-[#A69384] text-[10px] font-bold tracking-widest">
+                    <div class="text-right"><span>EL PUERTO</span><br><span id="time-puerto" class="font-serif text-sm text-[#6B5E54]">--:--</span></div>
+                    <div class="w-[1px] bg-[#E8D5C4]/50 h-8 self-center"></div>
+                    <div class="text-left"><span>BOSTON</span><br><span id="time-boston" class="font-serif text-sm text-[#6B5E54]">--:--</span></div>
+                </div>
+            </div>
+        </header>
+
+        <main class="max-w-2xl mx-auto p-6 mt-8">
+            <!-- VISTA REFUGIO -->
+            <div id="view-refugio" class="space-y-16 animate-fade-up">
+                <div class="bg-white border border-[#E8D5C4]/40 rounded-[4rem] p-12 text-center shadow-premium relative overflow-hidden">
+                    <div class="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-[#C29178] via-[#E8D5C4] to-[#8C7A6B]"></div>
+                    <button onclick="showModal('modal-reunion')" class="absolute top-8 right-10 text-[#A69384] hover:rotate-90 transition-transform"><i data-lucide="settings-2"></i></button>
+                    <p class="text-[10px] font-bold uppercase tracking-[0.5em] text-[#A69384] mb-10 opacity-60">Falta para volver a vernos</p>
+                    <div class="flex justify-center gap-8 md:gap-12">
+                        <div class="text-center"><span id="cd-d" class="text-6xl md:text-7xl font-serif italic text-[#6B5E54]">00</span><p class="text-[9px] font-bold uppercase tracking-widest text-[#D4C3B3] mt-2">Días</p></div>
+                        <div class="text-center"><span id="cd-h" class="text-6xl md:text-7xl font-serif italic text-[#6B5E54]">00</span><p class="text-[9px] font-bold uppercase tracking-widest text-[#D4C3B3] mt-2">Horas</p></div>
+                        <div class="text-center"><span id="cd-m" class="text-6xl md:text-7xl font-serif italic text-[#6B5E54]">00</span><p class="text-[9px] font-bold uppercase tracking-widest text-[#D4C3B3] mt-2">Minutos</p></div>
+                        <div class="hidden md:block text-center"><span id="cd-s" class="text-6xl md:text-7xl font-serif italic text-[#6B5E54]">00</span><p class="text-[9px] font-bold uppercase tracking-widest text-[#D4C3B3] mt-2">Segundos</p></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    <button onclick="window.open('https://wa.me/34646607301?text=te%20recuerdo%20que%20te%20amo', '_blank')" class="p-8 bg-white rounded-[3rem] border border-[#E8D5C4]/30 flex justify-between items-center group shadow-premium hover:border-[#C29178] transition-all">
+                        <div class="text-left"><span class="block text-[9px] font-bold text-[#A69384] uppercase tracking-widest mb-1">Para Isabel</span><span class="text-xl font-serif italic text-[#6B5E54]">Te recuerdo que te amo</span></div>
+                        <i data-lucide="send" class="text-[#C29178] group-hover:translate-x-2 transition-transform"></i>
+                    </button>
+                    <button onclick="window.open('https://wa.me/34601319804?text=te%20recuerdo%20que%20te%20amo', '_blank')" class="p-8 bg-[#F3E9E0]/40 rounded-[3rem] border border-[#E8D5C4]/30 flex justify-between items-center group shadow-premium hover:border-[#6B5E54] transition-all">
+                        <div class="text-left"><span class="block text-[9px] font-bold text-[#A69384] uppercase tracking-widest mb-1">Para Jaime</span><span class="text-xl font-serif italic text-[#6B5E54]">Te recuerdo que te amo</span></div>
+                        <i data-lucide="send" class="text-[#6B5E54] group-hover:translate-x-2 transition-transform"></i>
+                    </button>
+                </div>
+
+                <div id="memories-list" class="space-y-10"></div>
+            </div>
+
+            <div id="view-fotos" class="space-y-12 hidden animate-fade-up">
+                <div class="flex justify-between items-end border-b border-[#E8D5C4]/40 pb-10">
+                    <div class="space-y-2">
+                        <h2 class="text-5xl font-serif italic text-[#6B5E54]">Momentos</h2>
+                        <p class="text-[10px] uppercase tracking-[0.4em] text-[#A69384]">Nuestro archivo visual infinito</p>
+                    </div>
+                    <label class="bg-[#C29178] text-white p-5 rounded-full cursor-pointer shadow-xl hover:scale-110 hover:bg-[#A8745C] transition-all"><i data-lucide="camera"></i><input type="file" accept="image/*" class="hidden" onchange="uploadPhoto(event)"/></label>
+                </div>
+                <div id="photos-list" class="grid grid-cols-1 gap-12 pb-20"></div>
+            </div>
+
+            <div id="view-capsulas" class="space-y-16 hidden animate-fade-up">
+                <div class="text-center space-y-6">
+                    <h2 class="text-6xl font-serif italic text-[#6B5E54]">Cápsulas</h2>
+                    <button onclick="showModal('modal-capsule')" class="bg-[#6B5E54] text-white py-5 px-10 rounded-full shadow-2xl hover:bg-[#4A443F] transition-all flex items-center gap-4 mx-auto group">
+                        <i data-lucide="plus" class="group-hover:rotate-90 transition-transform"></i> <span class="text-[10px] font-bold uppercase tracking-[0.2em]">Sellar nuevo recuerdo</span>
+                    </button>
+                </div>
+                <div id="capsules-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-10"></div>
+            </div>
+
+            <div id="view-cine" class="space-y-12 hidden animate-fade-up text-center">
+                <div class="space-y-4 pt-10">
+                    <h2 class="text-6xl font-serif italic text-[#6B5E54]">Cine</h2>
+                    <p class="text-[11px] uppercase tracking-[0.4em] text-[#A69384]">Las mejores historias en Netflix</p>
+                </div>
+                <div class="bg-white rounded-[5rem] p-16 shadow-premium border border-[#E8D5C4]/20 max-w-md mx-auto relative overflow-hidden">
+                    <div id="movie-result" class="min-h-[200px] flex flex-col items-center justify-center mb-10">
+                        <i data-lucide="film" class="opacity-10 w-20 h-20 mb-6"></i>
+                        <p class="font-serif italic text-2xl text-[#A69384]">Sortead vuestra noche</p>
+                    </div>
+                    <button onclick="sortMovie()" class="w-full bg-[#6B5E54] text-white py-6 rounded-full font-bold uppercase text-[11px] tracking-[0.3em] shadow-2xl flex items-center justify-center gap-4 hover:bg-[#4A443F]">
+                        <i data-lucide="dices"></i> Sortear Película
+                    </button>
+                </div>
+            </div>
+
+            <div id="view-juegos" class="space-y-12 hidden animate-fade-up">
+                <div class="flex justify-between items-center px-4">
+                    <h2 class="text-4xl font-serif italic text-[#6B5E54]">Lienzo Mágico</h2>
+                    <button onclick="clearCanvasBoard()" class="text-[#A69384] hover:text-red-400 p-4 transition-colors"><i data-lucide="eraser"></i></button>
+                </div>
+                <div class="bg-white rounded-[4rem] border border-[#E8D5C4]/30 overflow-hidden shadow-premium h-[500px] cursor-crosshair">
+                    <canvas id="canvas-board" class="touch-none w-full h-full"></canvas>
+                </div>
+            </div>
+        </main>
+
+        <nav class="fixed bottom-10 left-1/2 -translate-x-1/2 glass px-10 py-6 rounded-full shadow-2xl flex items-center gap-10 z-50 border border-white/40 ring-8 ring-[#FDFBF7]/80">
+            <button id="nav-refugio" onclick="switchView('refugio')" class="opacity-40 transition-all"><i data-lucide="book-heart"></i></button>
+            <button id="nav-fotos" onclick="switchView('fotos')" class="opacity-40 transition-all"><i data-lucide="camera"></i></button>
+            <button onclick="showModal('modal-memory')" class="bg-[#6B5E54] text-white p-5 rounded-full -mt-20 shadow-2xl border-4 border-[#FDFBF7] hover:scale-110 transition-all"><i data-lucide="plus"></i></button>
+            <button id="nav-capsulas" onclick="switchView('capsulas')" class="opacity-40 transition-all"><i data-lucide="hourglass"></i></button>
+            <button id="nav-juegos" onclick="switchView('juegos')" class="opacity-40 transition-all"><i data-lucide="palette"></i></button>
+        </nav>
+    </div>
+
+    <!-- MODALES -->
+    <div id="modal-memory" class="modal-overlay">
+        <div class="bg-white w-full max-w-lg rounded-[4rem] p-12 shadow-2xl border border-white/50 animate-fade-up">
+            <h2 class="text-4xl font-serif italic mb-8 text-[#6B5E54]">Nuevo susurro</h2>
+            <textarea id="memory-input" class="w-full h-56 bg-[#FDFBF7] rounded-[2rem] p-8 text-2xl font-serif leading-relaxed resize-none" placeholder="Escribe lo que sientes..."></textarea>
+            <div class="flex justify-between items-center mt-10">
+                <button onclick="hideModal('modal-memory')" class="text-[11px] font-bold uppercase tracking-widest text-[#A69384]">Cerrar</button>
+                <button onclick="saveMemory()" class="bg-[#6B5E54] text-white px-12 py-5 rounded-full text-[11px] font-bold uppercase shadow-xl">Atesorar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-capsule" class="modal-overlay overflow-y-auto">
+        <div class="bg-white w-full max-w-lg rounded-[4rem] p-12 shadow-2xl space-y-8 my-auto border border-white/50 animate-fade-up">
+            <h2 class="text-4xl font-serif italic text-[#6B5E54]">Crear Cápsula</h2>
+            <div class="space-y-6">
+                <input id="capsule-title" type="text" class="w-full p-6 rounded-full text-lg font-serif" placeholder="Título">
+                <textarea id="capsule-content" class="w-full h-40 p-8 rounded-[3rem] text-xl font-serif leading-relaxed" placeholder="Mensaje futuro..."></textarea>
+                <div>
+                    <label class="text-[10px] font-bold uppercase text-[#A69384] ml-6 mb-3 block">Desbloqueo</label>
+                    <input id="capsule-date" type="datetime-local" class="w-full p-5 rounded-full font-serif italic text-[#6B5E54]">
+                </div>
+                <label class="bg-[#F3E9E0]/40 p-6 rounded-[3rem] border-2 border-dashed border-[#8C7A6B]/20 flex items-center justify-center gap-4 cursor-pointer text-[#6B5E54] hover:bg-[#F3E9E0] transition-all">
+                    <i data-lucide="camera"></i> <span class="font-serif italic text-lg text-center">Adjuntar Foto</span>
+                    <input id="capsule-file" type="file" class="hidden" accept="image/*" />
+                </label>
+            </div>
+            <div class="flex gap-6 pt-6">
+                <button onclick="hideModal('modal-capsule')" class="flex-1 text-[11px] font-bold uppercase text-[#A69384]">Cerrar</button>
+                <button onclick="saveCapsule()" class="flex-2 bg-[#6B5E54] text-white py-6 px-10 rounded-full text-[11px] font-bold uppercase shadow-2xl">Sellar Memoria</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-reunion" class="modal-overlay">
+        <div class="bg-white w-full max-w-md rounded-[4rem] p-12 text-center border border-white/50 shadow-2xl animate-fade-up">
+            <h2 class="text-4xl font-serif italic mb-10 text-[#6B5E54]">Próxima Cita</h2>
+            <input id="reunion-input" type="datetime-local" class="w-full p-6 rounded-full font-serif italic text-2xl text-[#6B5E54] text-center mb-10">
+            <div class="flex gap-6">
+                <button onclick="hideModal('modal-reunion')" class="flex-1 text-[11px] font-bold uppercase text-[#A69384]">Cerrar</button>
+                <button onclick="updateReunionDate()" class="flex-1 bg-[#6B5E54] text-white py-6 rounded-full text-[11px] font-bold uppercase shadow-xl">Fijar Fecha</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.sortMovie = () => {
+            const res = document.getElementById('movie-result');
+            res.innerHTML = `<div class="w-8 h-8 border-4 border-[#C29178] border-t-transparent rounded-full animate-spin mx-auto"></div>`;
+            setTimeout(() => {
+                const MOVIE_DATABASE = [
+                    { title: "Historia de un Matrimonio", genre: "Romance", desc: "Un retrato crudo y tierno de un divorcio." },
+                    { title: "Roma", genre: "Drama", desc: "Obra maestra sobre la vida doméstica en México." },
+                    { title: "La Sociedad de la Nieve", genre: "Drama", desc: "Increíble historia de supervivencia en los Andes." },
+                    { title: "Interstellar", genre: "Sci-Fi", desc: "Viaje espacial épico para salvar a la humanidad." }
+                ];
+                const peli = MOVIE_DATABASE[Math.floor(Math.random()*MOVIE_DATABASE.length)];
+                res.innerHTML = `
+                    <div class="animate-fade-up">
+                        <span class="text-[9px] font-bold uppercase tracking-widest bg-[#F3E9E0] px-4 py-1.5 rounded-full text-[#8C7A6B] mb-4 inline-block">Netflix • ${peli.genre}</span>
+                        <h3 class="text-4xl font-serif italic text-[#6B5E54] mb-3 leading-tight">${peli.title}</h3>
+                        <p class="text-sm text-[#8C7A6B] leading-relaxed px-6">${peli.desc}</p>
+                    </div>
+                `;
+            }, 1000);
+        };
+    </script>
+</body>
+</html>
